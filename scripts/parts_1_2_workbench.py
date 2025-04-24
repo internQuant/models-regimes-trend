@@ -2,10 +2,10 @@ import pandas as pd
 
 from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 
-from models_regimes_trend.utils.data import *
-from models_regimes_trend.utils.misc import *
-from models_regimes_trend.utils.plots import *
-from models_regimes_trend.utils.transforms import *
+from utils.data import *
+from utils.misc import *
+from utils.plots import *
+from utils.transforms import *
 
 ###############################################################################
 ## Data ingestion #############################################################
@@ -31,7 +31,6 @@ daily_returns = (
     .rename('Buy and Hold Daily')
 )
 
-daily_returns.plot()
 
 ###############################################################################
 # PART I ######################################################################
