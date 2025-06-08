@@ -1,44 +1,38 @@
 import numpy as np
 import pandas as pd
 
+from statsmodels.tsa.ar_model import AutoReg
 from numba import njit
 from typing import Union, Sequence
 
-class MonthlyTSMEngine:
-    """MonthlyTSMEngine computes time series momentum signals and returns for monthly financial data.
+class TSMEngine:
+    """
+    Computes time series momentum (TSM) signals and returns for financial data.
 
-    This class implements a time series momentum (TSM) strategy engine for monthly returns data.
-    Given a DataFrame or Series of monthly returns, it calculates lookback returns for specified
-    lookback periods, generates trading signals based on the sign of these returns, and computes
-    the resulting long-short and long-only strategy returns.
+    Given a DataFrame or Series of returns, this class calculates lookback
+    returns for specified periods, generates trading signals based on the sign
+    of these returns, and computes long-short and long-only strategy returns.
 
     Attributes:
-        returns (pd.DataFrame): The input monthly returns as a DataFrame.
-        quotes (pd.DataFrame): Cumulative product of returns, representing price quotes.
-        lookbacks (Sequence[int]): List of lookback periods to compute momentum.
-        lookback_returns (pd.DataFrame): Lookback returns for each period in lookbacks.
-        signals (pd.DataFrame): Trading signals (+1 for long, -1 for short) based on lookback returns.
-        long_short_returns (pd.DataFrame): Returns from applying long-short TSM strategy.
-        long_only_returns (pd.DataFrame): Returns from applying long-only TSM strategy.
+        returns (pd.DataFrame): Input returns as a DataFrame.
+        quotes (pd.DataFrame): Cumulative product of returns.
+        lookbacks (Sequence[int]): List of lookback periods.
+        lookback_returns (pd.DataFrame): Lookback returns for each period.
+        signals (pd.DataFrame): Trading signals (+1 for long, -1 for short).
+        long_short_returns (pd.DataFrame): Long-short TSM strategy returns.
+        long_only_returns (pd.DataFrame): Long-only TSM strategy returns.
+
     Args:
-        monthly_returns (Union[pd.DataFrame, pd.Series]): Monthly returns data.
-        lookback_list (Sequence[int], optional): List of lookback periods (in months) to use for momentum calculation.
-            Defaults to range(1, 25).
-    Methods:
-        _compute_lookback_returns(): Computes lookback returns for each lookback period.
-        _compute_signals(): Generates trading signals based on the sign of lookback returns.
-        _long_short_returns(): Calculates returns for the long-short TSM strategy.
-        _long_only_returns(): Calculates returns for the long-only TSM strategy.
+        returns (Union[pd.DataFrame, pd.Series]): Returns data.
+        lookback_list (Sequence[int], optional): Lookback periods (default: 1-24).
     """
-    """Monthly Time Series Momentum Engine."""
 
     def __init__(
         self,
-        monthly_returns: Union[pd.DataFrame, pd.Series],
+        returns: Union[pd.DataFrame, pd.Series],
         lookback_list: Sequence[int] = range(1, 25),
-        ):
-        
-        _returns = monthly_returns.to_frame() if isinstance(monthly_returns, pd.Series) else monthly_returns
+    ):
+        _returns = returns.to_frame() if isinstance(returns, pd.Series) else returns
         self.returns = _returns
 
         self.quotes = _returns.add(1).cumprod().copy()
@@ -55,29 +49,45 @@ class MonthlyTSMEngine:
         lookback_rets_list = []
 
         for lookback in self.lookbacks:
-            l_rets = (self.quotes/self.quotes.shift(lookback))-1
-            l_rets.columns = [str(lookback)]
+            l_rets = (self.quotes / self.quotes.shift(lookback)) - 1
+            l_rets.columns = [f"tsm_{lookback}"]
             lookback_rets_list.append(l_rets)
 
         return pd.concat(lookback_rets_list, axis=1)
-    
+
     def _compute_signals(self):
-        return np.sign(self.lookback_returns).shift(1).replace(0, 1)
-    
+        return np.sign(self.lookback_returns).shift(1)#.replace(0, 1)
+
     def _long_short_returns(self):
         return self.signals.mul(self.returns.squeeze(), axis=0)
-    
+
     def _long_only_returns(self):
         long_only_signals = self.signals.replace(-1, 0)
         long_only_returns = long_only_signals.mul(self.returns.squeeze(), axis=0).dropna(how='all')
         return long_only_returns
+
+# For testing numerical stability
+class LogTSMEngine(TSMEngine):
+    """Same API, but momentum is computed in log-price space."""
+    def _compute_lookback_returns(self):
+        log_prices = np.log1p(self.returns).cumsum()
+        rets = []
+        for lb in self.lookbacks:
+            # Δlog-price over the lookback horizon …
+            delta = log_prices - log_prices.shift(lb)
+            # … converted back to a simple percentage return
+            pct_ret = np.expm1(delta)
+            pct_ret.columns = [f"tsm_{lb}"]
+            rets.append(pct_ret)
+        return pd.concat(rets, axis=1)
+
 
 def m_sharpe(returns):
     " Computes the annualized Sharpe ratio of a series of monthly excess returns."
     return (returns.mean()/returns.std()) * np.sqrt(12)
 
 def compute_msm_ac(k, mu0, mu1, p00, p11):
-    """Computes lag-k autocorrelation of a 2-state MSM using only transition probs and regime means.
+    """Computes lag-k autocorrelation of a 2-state MSM using transition probabilitiess and regime means.
     
     Parameters:
     - k: Lag (integer)
@@ -146,6 +156,70 @@ def compute_MSM_metrics(df):
         }
 
     return pd.DataFrame(metrics)
+
+def compute_MSM_metrics_daily(df, trading_days=252):
+    """
+    Computes key metrics for each column of a DataFrame containing daily excess returns.
+    
+    Parameters:
+        df (pd.DataFrame): DataFrame of daily excess returns.
+        trading_days (int): Number of trading days per year for annualization (default=252).
+        
+    Returns:
+        pd.DataFrame: Metrics for each column, including:
+            - Annual excess return (%)
+            - Volatility (%)
+            - Sharpe ratio
+            - % positive days
+            - Number of days (non-missing)
+            - Max Drawdown (%)
+    """
+    metrics = {}
+    nobs = len(df)
+
+    for col in df.columns:
+        raw = df[col]
+        n_days = raw.notna().sum()
+        returns = raw.dropna()
+
+        if n_days == 0:
+            metrics[col] = {
+                'Annual excess return (%)': np.nan,
+                'Volatility (%)': np.nan,
+                'Sharpe ratio': np.nan,
+                '% positive days': np.nan,
+                'Number of days': 0,
+                'Max Drawdown (%)': np.nan,
+            }
+            continue
+        
+        # Annualize return and volatility
+        annual_return = returns.mean() * trading_days
+        volatility = returns.std() * np.sqrt(trading_days)
+        sharpe = (returns.mean() / returns.std()) * np.sqrt(trading_days) if returns.std() != 0 else np.nan
+        
+        pct_positive = (returns > 0).sum() / n_days * 100
+        
+        # Cumulative returns and drawdown
+        cumulative = (1 + returns).cumprod()
+        running_max = cumulative.cummax()
+        drawdown = (cumulative - running_max) / running_max
+        max_drawdown = drawdown.min()
+        
+        pct_days = returns.count() / nobs * 100
+
+        metrics[col] = {
+            'Annual excess return (%)': round(annual_return * 100, 2),
+            'Volatility (%)': round(volatility * 100, 2),
+            'Sharpe ratio': round(sharpe, 2),
+            '% positive days': round(pct_positive, 2),
+            '# of days': int(n_days),
+            r'% of days': round(pct_days, 2),
+            'Max Drawdown (%)': round(max_drawdown * 100, 2),
+        }
+
+    return pd.DataFrame(metrics)
+
 
 @njit
 # might use in the future
@@ -229,3 +303,72 @@ def lsvm_target_vol_scalars(
     St2_w = -(sigma_target/sigma2) / _den
 
     return St1_w, St2_w
+
+def select_ar_lag(
+    series: pd.Series,
+    max_lag: int = 21,
+    trend: str = 'c',
+    verbose: bool = True
+) -> tuple[pd.Series, int]:
+    """Fit AutoReg models for lags 1..max_lag, select lag with lowest BIC.
+    """
+    bic_dict = {}
+    for lag in range(1, max_lag + 1):
+        model = AutoReg(series, lags=lag, trend=trend)
+        result = model.fit()
+        bic_dict[lag] = result.bic
+
+    bic_series = pd.Series(bic_dict)
+    best_lag = bic_series.idxmin()
+    if verbose:
+        print(f"Selected lag: {best_lag} (BIC={bic_series[best_lag]:.2f})")
+    return bic_series, best_lag
+
+def ar2_forecast(
+    const: float,
+    ar1: float,
+    ar2: float,
+    y1: float,
+    y2: float
+) -> float:
+    """AR(2) forecast function."""
+    return const + ar1*y1 + ar2*y2
+
+def ar2_offline_h_forecast(
+    const: float,
+    ar1: float,
+    ar2: float,
+    y1: float,
+    y2: float,
+    h: int
+) -> np.ndarray:
+    """
+    Produce h-step ahead forecasts from an AR(2) model by iterative substitution.
+    
+    Parameters
+    ----------
+    const : float
+        Constant term (intercept).
+    ar1 : float
+        AR coefficient for lag-1.
+    ar2 : float
+        AR coefficient for lag-2.
+    y1 : float
+        Observation at time t-1.
+    y2 : float
+        Observation at time t-2.
+    h : int
+        Number of steps ahead to forecast.
+
+    Returns
+    -------
+    list of floats
+        Forecasts [ŷ_{t+1}, ŷ_{t+2}, …, ŷ_{t+h}].
+    """
+    forecasts = []
+    prev, last = y2, y1  # prev = y_{t-2}, last = y_{t-1}
+    for step in range(1, h+1):
+        y_hat = const + ar1 * last + ar2 * prev
+        forecasts.append(y_hat)
+        prev, last = last, y_hat
+    return np.stack(forecasts)

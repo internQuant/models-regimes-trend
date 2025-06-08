@@ -36,7 +36,7 @@ class FFScraper:
             raise Exception(f"Failed to download file: {response.status_code}")
 
         zip_file = zipfile.ZipFile(io.BytesIO(response.content))
-        csv_files = [f for f in zip_file.namelist() if f.endswith(".CSV")]
+        csv_files = [f for f in zip_file.namelist() if f.lower().endswith(".csv")]
 
         if not csv_files:
             raise Exception("No CSV file found in the ZIP archive.")

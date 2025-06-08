@@ -6,18 +6,18 @@ from statsmodels.graphics.tsaplots import plot_acf
 from cycler import cycler
 
 colors = [
-    '#0A7EF2',  # Blue
-    '#FF6B6B',  # Vibrant Red
-    '#FFA94D',  # Soft Orange
-    '#556270',  # Slate Gray
-    '#C7F464',  # Lime Green
-    '#6A4C93',  # Rich Purple
-    '#1A535C',  # Deep Teal
-    '#FF9F1C'   # Bright Orange
-] 
+    '#0A7EF2',
+    '#FF6B6B',
+    '#FFA94D',
+    '#556270',
+    '#C7F464',
+    '#6A4C93',
+    '#1A535C',
+    '#FF9F1C' 
+]
+
 plt.rcParams['axes.prop_cycle'] = cycler(color=colors)
 plt.rcParams["figure.dpi"] = 150
-
 
 def shade_signal(ax, signal_series):
     """Shade regions of the plot where the signal_series equals 1."""
@@ -28,7 +28,6 @@ def shade_signal(ax, signal_series):
             if group.iloc[0]:
                 start, end = group.index.min(), group.index.max()
                 ax.axvspan(start, end, color='#c7c7c7', alpha=0.3)
-
 
 def MSM_triple_plot(states_returns, smoothed_probs, state_assignments, returns):
     """Plot the excess returns, bull regime probability, and cumulative return in a single figure."""
@@ -113,7 +112,6 @@ def plot_sharpes(sharpes, reference):
     plt.subplots_adjust(left=0.1, right=0.9)
     plt.show()
 
-    
 def plot_msm_ac(returns, msm_ar):
     """
     Plots the autocorrelation of returns alongside the autocorrelation under a Markov Switching Model (MSM).
@@ -329,4 +327,144 @@ def plot_sharpes_df(df, references):
     
     plt.tight_layout(pad=3.0)
     plt.subplots_adjust(left=0.1, right=0.9)
+    plt.show()
+
+def plot_acf_custom(returns):
+    ci = 1.96 / np.sqrt(len(returns))
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    ax.set_axisbelow(False)
+
+    plot_acf(
+        returns,
+        lags=range(1, 21),
+        ax=ax,
+        alpha=None,
+        vlines_kwargs={'linewidth': .75, 'color': 'C0'}, 
+        marker='o',
+        markersize=4
+    )
+
+    ax.hlines(
+        [ci, -ci],
+        xmin=0,
+        xmax=20,
+        linestyles='dotted',
+        zorder=2
+    )
+
+    ax.axhline(0, color='black', linewidth=1.25, zorder=3)
+    ax.set_xlabel("Lag (number of days)", fontname="Times New Roman")
+    ax.set_ylabel("Autocorrelation",   fontname="Times New Roman")
+
+    ax.set_xticks([0, 5, 10, 15, 20])
+    ax.set_yticks(np.arange(-0.1, 0.11, 0.02))
+
+    ax.set_xlim(0, 20)
+    ax.set_ylim(-0.1, 0.1)
+
+    fig.subplots_adjust(left=0, right=1)
+    ax.tick_params(direction="in", top=True, right=True)
+    plt.show()
+
+def cumulative_plot(returns):
+    fig, ax = plt.subplots(figsize=(11, 9))
+    returns.add(1).cumprod().plot(logy=True, ax=ax, linewidth=1)
+    ax.yaxis.set_ticks_position('both')
+    ax.xaxis.set_ticks_position('both')
+    ax.tick_params(axis='y', which='both', left=True, right=True, direction='in')
+    ax.tick_params(axis='x', which='both', top=True, bottom=True, direction='in')
+    ax.margins(0)
+    ax.set_ylabel('Cumulative return (log scale)')
+    ax.set_xlabel((None))
+    plt.show()
+import matplotlib.pyplot as plt
+import pandas as pd
+
+def plot_return_and_cumulative_by_regime(
+    state_assignments: pd.Series,
+    returns: pd.Series,
+    reg_ids: dict):
+    """
+    Plot the return series and cumulative return (log scale),
+    coloring each contiguous segment by regime using matplotlib's default color cycle.
+    Tick marks are drawn inside and on all sides (top, bottom, left, right).
+    
+    Parameters
+    ----------
+    state_assignments : pd.Series of strings
+        Index = DateTimeIndex, values = regime names
+    returns : pd.Series of floats
+        Must align with state_assignments.
+    reg_ids : dict
+        Mapping from regime name to an integer ID (only used for ordering).
+    """
+
+    # 1) Build a list of default colors from matplotlib’s cycle
+    color_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
+
+    # 2) Assign each regime a color based on its position in reg_ids.keys()
+    regimes = list(reg_ids.keys())
+    color_map = {
+        regime: color_cycle[i % len(color_cycle)]
+        for i, regime in enumerate(regimes)
+    }
+
+    # 3) (Optional) Human‐readable labels for legend
+    label_map = {regime: regime for regime in regimes}
+
+    # 4) Compute cumulative returns
+    cum_returns = (returns + 1).cumprod()
+
+    # 5) Identify contiguous runs of the same regime
+    run_id = (state_assignments != state_assignments.shift()).cumsum()
+    grouped = run_id.groupby(run_id).groups
+
+    # 6) Prepare figure
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+
+    # Top: daily returns colored by regime
+    plotted = set()
+    for run_int, timestamps in grouped.items():
+        regime = state_assignments.loc[timestamps[0]]
+        ax1.plot(
+            timestamps,
+            returns.loc[timestamps],
+            color=color_map.get(regime, 'k'),
+            linewidth=0.75,
+            label=label_map[regime] if regime not in plotted else None
+        )
+        plotted.add(regime)
+
+    ax1.tick_params(length=4, width=0.5, direction='in', which='both',
+                    top=True, right=True, bottom=True, left=True)
+    ax1.set_ylim(-0.20, 0.15)
+    ax1.set_title("Daily U.S. stock returns", fontweight='bold')
+    ax1.set_ylabel("Returns")
+    ax1.legend(loc='upper left')
+    ax1.margins(0)
+
+    # Bottom: cumulative returns on log scale
+    plotted.clear()
+    for run_int, timestamps in grouped.items():
+        regime = state_assignments.loc[timestamps[0]]
+        ax2.plot(
+            timestamps,
+            cum_returns.loc[timestamps],
+            color=color_map.get(regime, 'k'),
+            linewidth=0.75,
+            label=label_map[regime] if regime not in plotted else None
+        )
+        plotted.add(regime)
+
+    ax2.tick_params(length=4, width=0.5, direction='in', which='both',
+                    top=True, right=True, bottom=True, left=True)
+    ax2.set_yscale('log')
+    ax2.set_title("Cumulative returns on U.S. stock market (log scale)", fontweight='bold')
+    ax2.set_ylabel("Cumulative return (log scale)")
+    ax2.legend(loc='upper left')
+    ax2.margins(0)
+
+    plt.xticks(rotation=0)
+    plt.tight_layout(pad=3)
     plt.show()
