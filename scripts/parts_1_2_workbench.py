@@ -32,13 +32,32 @@ daily_returns = (
 )
 
 
+path = 'data/historical_snapshots/ff_data_monthly_202401_snapshot.csv'
+
+df = pd.read_csv(path, skiprows=3, parse_dates=True).dropna()
+cols = df.columns.str.lower().to_list()
+cols[0] = "date"
+df.columns = cols
+df["date"] = df["date"].str.replace("  ", "")
+df = df[df["date"].str.len()>4].copy()
+df["date"] = pd.to_datetime(df["date"], format="%Y%m")
+df = df.set_index("date").astype(float)/100
+
+
+monthly_returns =(
+    df['mkt-rf']['1943':'2023-07']
+    .copy()
+    .squeeze()
+    .rename('Buy and Hold')
+)
+
 ###############################################################################
 # PART I ######################################################################
 ## Compute TSM returns and sharpes using long-only and long-short strategies
-## MonthlyTSMEngine is a class that computes the returns and signals for TSM strategies 
+## TSMEngine is a class that computes the returns and signals for TSM strategies 
 ## It requires the series of monthly returns as input
 ## Plot sharpes accordingly
-TSME = MonthlyTSMEngine(monthly_returns)
+TSME = TSMEngine(monthly_returns)
 TSME_S = TSME.signals.copy().replace(0, np.nan)
 
 lo_sharpe = m_sharpe(TSME.long_only_returns)
@@ -60,7 +79,7 @@ model = (
         )
 )
 result = model.fit()
-regimes_stats = identify_regimes(result.params)
+regimes_stats = identify_2_regimes(result.params)
 pd.DataFrame(regimes_stats)
 
 smoothed_probs = result.smoothed_marginal_probabilities

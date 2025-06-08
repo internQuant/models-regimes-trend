@@ -1,6 +1,7 @@
 import pandas as pd
+import numpy as np
 
-def identify_regimes(params, decimals=4):
+def identify_2_regimes(params, decimals=4):
     """Identify bull and bear regimes from a fitted Markov switching model's parameters.
 
     Regime identification:
@@ -62,6 +63,69 @@ def identify_regimes(params, decimals=4):
     }
     return result_dict
 
+
+def identify_3_regimes(estimates: pd.Series) -> dict:
+    """Given parameter estimates, return a mapping of regime labels ("Bull", "Bear", "Chop")
+    to their corresponding regime indices, based on the constant term.
+    """
+    const_vals = {
+        int(idx.split('[')[1].rstrip(']')): estimates[idx]
+        for idx in estimates.index if idx.startswith('const[')
+    }
+    sorted_by_const = sorted(const_vals, key=lambda r: const_vals[r])
+    bear_reg, chop_reg, bull_reg = sorted_by_const
+    return {
+        "Bull": bull_reg,
+        "Bear": bear_reg,
+        "Chop": chop_reg
+    }
+
+def build_3_regimes_summary_table(
+    estimates: pd.Series,
+    tvalues: pd.Series,
+    pvalues: pd.Series,
+    label_map: dict
+) -> pd.DataFrame:
+    """
+    Build a summary table for 3 regimes, using a provided label_map.
+    """
+    rows = []
+    param_keys = [
+        ("const",  "Constant"),
+        ("ar.L1",  "AR(1)"),
+        ("ar.L2",  "AR(2)"),
+        ("sigma2", "Std. Deviation")
+    ]
+
+    for regime_label, reg in sorted(label_map.items(), key=lambda x: ["Bull", "Bear", "Chop"].index(x[0])):
+        for key, pretty in param_keys:
+            idx = f"{key}[{reg}]"
+            est = estimates.get(idx, np.nan)
+            if key == "sigma2" and not pd.isna(est):
+                est = np.sqrt(est)
+            rows.append({
+                "Regime":      regime_label,
+                "Parameter":   pretty,
+                "Estimate":    est,
+                "t-statistic": tvalues.get(idx, np.nan),
+                "p-value":     pvalues.get(idx, np.nan)
+            })
+
+    df = pd.DataFrame(rows).set_index(["Regime", "Parameter"])
+    return df
+
+
+def build_3_regimes_summary(
+    estimates: pd.Series,
+    tvalues: pd.Series,
+    pvalues: pd.Series
+) -> pd.DataFrame:
+    """
+    Build a summary table for 3 regimes, classifying them as Bull, Bear, or Chop,
+    and ordering the output as Bull → Bear → Chop.
+    """
+    label_map = identify_3_regimes(estimates)
+    return build_3_regimes_summary_table(estimates, tvalues, pvalues, label_map)
 
 def detect_tsm_classifications(
     target_df: pd.DataFrame,
