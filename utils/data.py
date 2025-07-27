@@ -73,3 +73,12 @@ class FFScraper:
             df["date"] = pd.to_datetime(df["date"], format="%Y%m%d")
             self.__daily_data = df.set_index("date").astype(float)/100
         return self.__daily_data
+    
+def read_ff_daily_csv(
+    path="data/historical_snapshots/ff_data_daily_202410_snapshot.csv"
+):
+    csv_f = pd.read_csv(path, skiprows=4, parse_dates=True).dropna().iloc[:, :2]
+    csv_f.columns = ['date', 'returns']
+    csv_f['date'] = pd.to_datetime(csv_f['date'])
+    csv_f = csv_f.set_index('date')['returns'].rename('Unconditional') / 100
+    return csv_f

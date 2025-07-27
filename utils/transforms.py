@@ -157,7 +157,7 @@ def compute_MSM_metrics(df):
 
     return pd.DataFrame(metrics)
 
-def compute_MSM_metrics_daily(df, trading_days=252):
+def compute_returns_metrics(df, trading_days=252):
     """
     Computes key metrics for each column of a DataFrame containing daily excess returns.
     
@@ -193,14 +193,10 @@ def compute_MSM_metrics_daily(df, trading_days=252):
             }
             continue
         
-        # Annualize return and volatility
         annual_return = returns.mean() * trading_days
         volatility = returns.std() * np.sqrt(trading_days)
         sharpe = (returns.mean() / returns.std()) * np.sqrt(trading_days) if returns.std() != 0 else np.nan
-        
         pct_positive = (returns > 0).sum() / n_days * 100
-        
-        # Cumulative returns and drawdown
         cumulative = (1 + returns).cumprod()
         running_max = cumulative.cummax()
         drawdown = (cumulative - running_max) / running_max
@@ -220,6 +216,8 @@ def compute_MSM_metrics_daily(df, trading_days=252):
 
     return pd.DataFrame(metrics)
 
+def part4_format_metrics(df, trading_days=252):
+    return compute_returns_metrics(df, trading_days).T.iloc[:, list(range(3)) + [-1]]
 
 @njit
 # might use in the future
@@ -372,3 +370,102 @@ def ar2_offline_h_forecast(
         forecasts.append(y_hat)
         prev, last = last, y_hat
     return np.stack(forecasts)
+
+def strategy_returns(
+    close_prices: pd.DataFrame,
+    portfolio: pd.Series,
+    rebal_interval: int = 10,
+    costs = 0.0002,
+) -> pd.Series:
+    
+    weights = portfolio.copy().unstack().fillna(0)
+
+    if rebal_interval is not None:
+        weights = weights.iloc[::rebal_interval]
+
+    assert weights.columns.isin(close_prices.columns).all()
+    assert weights.index.isin(close_prices.index).all()
+
+    dates = close_prices.index[close_prices.index >= weights.index[0]]
+    prices = close_prices.copy().loc[dates, weights.columns].ffill().bfill()
+
+    idxs = prices.index
+    cols = prices.columns
+
+    weight_arr = weights.to_numpy()
+    price_arr = prices.to_numpy()
+
+    r, t = compute_strategy_returns(price_arr, weight_arr, rebal_interval)
+
+    turnover = pd.DataFrame(t, idxs, cols).shift(1).fillna(0)
+    turnover.columns.name = None
+    returns = pd.DataFrame(r, index=idxs, columns=cols)
+    # drifted_weights = pd.DataFrame(w, idxs, cols).stack()
+    return (returns - (turnover.abs()*costs))
+
+@njit
+def compute_strategy_returns(prices_array, weights_array, rebal_interval):
+
+    n_rows, n_cols = prices_array.shape
+    returns = np.full((n_rows, n_cols), np.nan)
+    turnover = np.full((n_rows, n_cols), np.nan)
+    
+    weights_i = weights_array[0, :]
+    qty_i = weights_i / prices_array[0, :]
+    rebal_i = 0
+    
+    for row in range(n_rows):
+        prices_i = prices_array[row, :]
+        financial_i = qty_i * prices_i
+        ret_i = financial_i - weights_i
+        returns[row, :] = ret_i
+        drifted_i = financial_i / (1 + ret_i.sum())
+        
+        if row % rebal_interval == 0:
+            weights_i = weights_array[rebal_i, :]
+            rebal_i += 1
+        else:
+            weights_i = drifted_i
+
+        turnover[row, :] = weights_i - drifted_i
+        qty_i = weights_i / prices_i
+
+    return returns, turnover
+
+def compute_moving_averages(
+    series,
+    windows=[1, 5, 21, 63, 126, 252],
+    squared=True
+) -> pd.DataFrame:
+    """Compute moving averages for given windows.
+    If squared=True, also compute moving averages of squared series.
+    Returns a DataFrame.
+    """
+    result = pd.DataFrame(index=series.index)
+    if squared: series_sq = series ** 2
+    for w in windows:
+        result[f'sma_{w}'] = series.rolling(window=w).mean()
+        if squared: result[f'smasq_{w}'] = series_sq.rolling(window=w).mean()
+    return result
+
+def probability_threshold_signals(
+    probabilities: pd.DataFrame,
+    thresholds: list = [0.05, 0.10, 0.20],
+    regime: str = 'bear'
+):
+    """
+    Generate signals based on probability thresholds for a specific regime.
+    
+    Parameters:
+    - probabilities: DataFrame with probabilities for different regimes.
+    - thresholds: List of thresholds to apply.
+    - regime: The regime to generate signals for (e.g., 'bear').
+    
+    Returns:
+    - DataFrame with signals for the specified regime.
+    """
+    signals = pd.DataFrame(index=probabilities.index)
+    for threshold in thresholds:
+        name = f'no_{regime}_{(threshold*100):.0f}%'
+        signals[name] = (probabilities[regime] < threshold)*1
+    return signals

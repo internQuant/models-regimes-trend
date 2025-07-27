@@ -120,5 +120,5 @@ reg_rets = (
     .dropna(how='all')
 )
 
-compute_MSM_metrics_daily(reg_rets)
-compute_MSM_metrics_daily(strat_rets.iloc[:, [0, 2, 1]])
+compute_returns_metrics(reg_rets)
+compute_returns_metrics(strat_rets.iloc[:, [0, 2, 1]])
