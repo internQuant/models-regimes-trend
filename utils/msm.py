@@ -4,12 +4,18 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-from scipy.stats import norm
 
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
+from sklearn.ensemble import RandomForestClassifier
+from statsmodels.tsa.regime_switching.markov_autoregression import (
+    MarkovAutoregression, MarkovAutoregressionResultsWrapper
+)
+from tqdm import tqdm
 
-from statsmodels.tsa.regime_switching.markov_autoregression import MarkovAutoregression
+from .transforms import ar2_forecast
+
 
 def _build_transition_matrix(tp: np.ndarray, k: int) -> np.ndarray:
     """Build a row-stochastic matrix P from flat transition probs tp."""
@@ -18,7 +24,6 @@ def _build_transition_matrix(tp: np.ndarray, k: int) -> np.ndarray:
     P[:-1, :] = upper
     P[-1, :] = 1.0 - upper.sum(axis=0)
     return P.T
-
 
 @dataclass
 class MSMParamClassifier:
@@ -110,7 +115,6 @@ class MSMParamClassifier:
             f"\nregime_map: {self.regime_map}\n"
         )
 
-
 class ExpandingMSMARFitter:
     """Fits Markov-Switching AR models on expanding windows of an univariate series,
     using a ThreadPoolExecutor with a default of n_threads = max(1, cpu_count - 4).
@@ -166,7 +170,7 @@ class ExpandingMSMARFitter:
             switching_variance=True,
         )
         self.model_kwargs = {**defaults, **model_kwargs}
-        self.fit_kwargs = {"maxiter":300, "disp": False}
+        self.fit_kwargs = {"maxiter":1000, "disp": False}
 
         cpu = os.cpu_count() or 1
         self.max_workers = max_workers or max(1, cpu - 4)
@@ -257,14 +261,14 @@ def forecast_MSM_vol(
 
     Returns
     -------
-    sigma_hat : np.ndarray
+    vol_frcst : np.ndarray
         Forecasted standard deviations.
     """
     mean_hat = pi @ mus
     second_mom = pi @ (sig**2 + mus**2)
     var_hat = second_mom - mean_hat**2
-    sigma_hat = np.sqrt(var_hat)
-    return sigma_hat
+    vol_frcst = np.sqrt(var_hat)
+    return vol_frcst
 
 def compute_eta(
     observations: np.ndarray,
@@ -290,12 +294,14 @@ def compute_eta(
     eta_array = norm.pdf(observations, loc=forecasts, scale=sigmas)
     return eta_array
 
-def update_predict_probs(
+def update_filter_probs(
     init_probs: np.ndarray,
     eta: np.ndarray,
     P: np.ndarray
 ) -> tuple:
-    """Update and predict probabilities based on initial probabilities, eta, and transition matrix P.
+    """Implements the canonical Hamilton 2-step filter for Markov-switching models.
+
+    Filters and updates probabilities based on initial probabilities, eta, and P.
 
     Parameters
     ----------
@@ -312,22 +318,21 @@ def update_predict_probs(
         Filtered probabilities and updated probabilities.
     """
     T = eta.shape[0]
-    predicted_probs = np.zeros_like(eta)
+    filtered_probs = np.zeros_like(eta)
     updated_probs = np.zeros_like(eta)
-
-    prob_t = init_probs.copy()
+    t_prob = init_probs.copy()
 
     for t in range(T):
-        # Predict step
-        curr_probs = prob_t @ P
-        predicted_probs[t] = curr_probs
+        # filter
+        t_prob = t_prob @ P
+        filtered_probs[t] = t_prob.copy()
         
-        # Update step
-        num = curr_probs * eta[t]
-        prob_t = num / num.sum()
-        updated_probs[t] = prob_t
+        # update
+        num = t_prob * eta[t]
+        t_prob = num / num.sum()
+        updated_probs[t] = t_prob.copy()
 
-    return predicted_probs, updated_probs
+    return filtered_probs, updated_probs
 
 def compute_probability_forecasts(
     observations: pd.Series,
@@ -360,7 +365,7 @@ def compute_probability_forecasts(
     Returns
     -------
     tuple
-        Predicted probabilities and updated probabilities.
+        filtered and updated probabilities.
     """
     eta = compute_eta(
         observations=observations,
@@ -368,10 +373,238 @@ def compute_probability_forecasts(
         sigmas=sigmas
     )
 
-    predicted_probs, updated_probs = update_predict_probs(
+    filtered_probs, updated_probs = update_filter_probs(
         init_probs=init_probs,
         eta=eta,
         P=P
     )
 
-    return predicted_probs, updated_probs
+    return filtered_probs, updated_probs
+
+def ar2_msm_forecast(
+    msm_classification: MSMParamClassifier,
+    init_probs: np.ndarray,
+    y1: float,
+    y2: float,
+    n_steps: int
+) -> dict:
+    """
+    Iteratively forecast returns and regime probabilities via an AR(2) in each regime
+    and an HMM filter that uses the mixture return as the “observation.”
+
+    Parameters
+    ----------
+    P : ndarray, shape (k, k)
+        Row-stochastic regime transition matrix.
+    consts : ndarray, shape (k,)
+        Regime-specific intercepts.
+    ar1s : ndarray, shape (k,)
+        Regime-specific AR(1) coefficients.
+    ar2s : ndarray, shape (k,)
+        Regime-specific AR(2) coefficients.
+    sigmas : ndarray, shape (k,)
+        Regime-specific return volatilities (for the likelihood).
+    init_probs : ndarray, shape (k,)
+        Initial regime probabilities (sum to 1).
+    y1 : float
+        Most recent observed return (t = 0).
+    y2 : float
+        Second-most recent observed return (t = -1).
+    n_steps : int
+        Number of steps ahead to forecast.
+
+    Returns
+    -------
+    dict with keys
+      'filtered_probs'    : ndarray, shape (n_steps, k)
+         P( regime at t | data up to t-1 )
+      'updated_probs'      : ndarray, shape (n_steps, k)
+         P( regime at t | data up to t )
+      'regime_forecasts'   : ndarray, shape (n_steps, k)
+         AR2 forecasts r̂_{t,j} for each regime j
+      'mixture_forecast'   : ndarray, shape (n_steps,)
+         Weighted return forecast Σ_j π_{t|t-1,j} · r̂_{t,j}
+    """
+
+    # Extract parameters from MSMParamClassifier
+    P = msm_classification.P
+    consts = msm_classification.mus
+    ar1s = msm_classification.ars[0] if msm_classification.ars.shape[0] > 0 else np.zeros(msm_classification.k)
+    ar2s = msm_classification.ars[1] if msm_classification.ars.shape[0] > 1 else np.zeros(msm_classification.k)
+    sigmas = msm_classification.sig
+    
+    k = P.shape[0]
+    if P.shape != (k, k):
+        raise ValueError("P must be square (k×k)")
+    for arr, name in [(consts,'consts'), (ar1s,'ar1s'), (ar2s,'ar2s'),
+                      (sigmas,'sigmas'), (init_probs,'init_probs')]:
+        if arr.shape != (k,):
+            raise ValueError(f"{name} must have shape ({k},)")
+
+    pred_probs   = np.zeros((n_steps, k), dtype=float)
+    regime_fcast = np.zeros((n_steps, k), dtype=float)
+    mix_fcast    = np.zeros(n_steps,     dtype=float)
+
+    prev1 = y1
+    prev2 = y2
+    prob_t = init_probs.copy()   # P( regime at t=0 | data up to t=0 )
+
+    for t in range(n_steps):
+        r_hat = consts + ar1s * prev1 + ar2s * prev2
+        regime_fcast[t] = r_hat
+
+        prob_t = prob_t @ P
+        pred_probs[t] = prob_t
+
+        mix = prob_t @ r_hat
+        mix_fcast[t] = mix
+
+        prev2 = prev1
+        prev1 = mix
+
+    return {
+        'filtered_probs':    pred_probs,
+        'regime_forecasts':  regime_fcast,
+        'mixture_forecast':  mix_fcast
+    }
+
+class MSMARResultsLite:
+    """
+    Lightweight container for a MarkovAutoregressionResultsWrapper,
+    keeping only copies of filtered_regime_probabilities,
+    smoothed_regime_probabilities, and params.
+    """
+    def __init__(self, result: MarkovAutoregressionResultsWrapper):
+        self.filtered_probs = result.filtered_marginal_probabilities.copy()
+        self.smoothed_probs = result.smoothed_marginal_probabilities.copy()
+        self.params = result.params.copy()
+
+    def __repr__(self):
+        return (
+            f"<MSMARResultsLite filtered.shape={self.filtered_probs.shape} "
+            f"smoothed.shape={self.smoothed_probs.shape} "
+            f"n_params={len(self.params)}>"
+        )
+
+def convert_msmar_results(
+    results: Dict[pd.Timestamp, MarkovAutoregressionResultsWrapper]
+) -> Dict[pd.Timestamp, MSMARResultsLite]:
+    """
+    Given a dict mapping timestamps to MarkovAutoregressionResultsWrapper instances,
+    return a new dict mapping the same timestamps to MARResultsLite instances.
+    """
+    return {ts: MSMARResultsLite(res) for ts, res in results.items()}
+
+def forecast_msm_rfc(
+    result_df: pd.DataFrame,
+    lagged_returns: pd.DataFrame,
+    ma_lags_rets: pd.DataFrame,
+    rf_kwargs: dict = None
+):
+    """Forecast returns, volatility, and regime probabilities using fitted MSM 
+    params and a Random Forest classifier.
+
+    Parameters
+    ----------
+    result_df : pd.DataFrame
+        Indexed by forecast date, with columns:
+        - 'results': fitted MSM results object containing params, filtered_probs, smoothed_probs
+        - 'forecast_period': dates corresponding to out-of-sample forecast periods
+    lagged_returns : pd.DataFrame
+        Lagged return series with columns ['l0', 'l1', 'l2'], indexed by the same dates.
+    ma_lags_rets : pd.DataFrame
+        Moving-average of lagged returns to use as additional features for the Random Forest.
+    rf_kwargs : dict, optional
+        Additional keyword arguments to pass to sklearn.ensemble.RandomForestClassifier.
+
+    Returns
+    -------
+    dict
+        A dictionary containing:
+        - 'returns': pd.Series of point forecasts for returns
+        - 'vol': pd.Series of volatility forecasts
+        - 'filtered_probs': pd.DataFrame of MSM filtered state probabilities
+        - 'updated_probs': pd.DataFrame of MSM updated state probabilities
+        - 'rforest_probs': pd.DataFrame of state probabilities predicted by the Random Forest
+    """
+    msm_columns = ['bull', 'bear', 'chop']
+    vol_frcst = []
+    ret_frcst   = []
+    updt_prob_frcst  = []
+    fltd_prob_frcst = []
+    rforest_prob_frcst = []
+    rfc = RandomForestClassifier(**rf_kwargs)
+
+    for i in tqdm(result_df.index, desc="Forecasting loop", unit="month"):
+
+        i_msm             = result_df.loc[i]
+        i_results         = i_msm['results']
+        i_forecast_period = i_msm['forecast_period']
+
+        i_clas       = MSMParamClassifier(i_results.params)
+        i_last_probs = i_results.filtered_probs.iloc[-1].values[i_clas.order]
+        i_lag_rets   = lagged_returns.loc[i_forecast_period].copy()
+        i_idx        = i_lag_rets.index
+
+        i_ar2_frcst = ar2_forecast(
+            const = i_clas.mus,
+            ar1   = i_clas.ars[0],
+            ar2   = i_clas.ars[1],
+            y1    = i_lag_rets['l1'].values.reshape(-1,1),
+            y2    = i_lag_rets['l2'].values.reshape(-1,1)
+        )
+
+        i_fltd_hat, i_updt_hat = compute_probability_forecasts(
+            observations      = i_lag_rets['l0'].values.reshape(-1,1),
+            forecasted_values = i_ar2_frcst,
+            sigmas            = i_clas.sig,
+            init_probs        = i_last_probs,
+            P                 = i_clas.P
+        )
+
+        i_vol_frcst = forecast_MSM_vol(i_fltd_hat, i_clas.mus, i_clas.sig)
+        i_vol_frcst = pd.Series(i_vol_frcst, i_idx)
+        i_ret_frcst = pd.Series(np.sum(i_ar2_frcst*i_fltd_hat, axis=1), i_idx)
+
+        i_fltd_hat = pd.DataFrame(i_fltd_hat, i_idx, msm_columns)
+        i_updt_hat = pd.DataFrame(i_updt_hat, i_idx, msm_columns)
+
+        # Random Forest Pipeline ###############################################
+        i_filtered_probs = i_results.filtered_probs[i_clas.order]
+        i_lag_probs = i_filtered_probs.shift(1).dropna()
+        i_rf_idx = i_lag_probs.index
+        
+        i_rf_feats = pd.concat([i_lag_probs, ma_lags_rets], axis=1).dropna()
+        i_rf_feats_array = i_rf_feats.loc[i_rf_idx].values
+
+        i_smooth_probs = i_results.smoothed_probs[i_clas.order]
+        i_smooth_probs.columns = [0, 1, 2]
+        i_rf_targets = i_smooth_probs.idxmax(axis=1).dropna().values[1:]
+
+        rfc.fit(i_rf_feats_array, i_rf_targets)
+
+        i_ma_lags_rets = ma_lags_rets.loc[i_idx].copy()
+        i_rf_pred_data = pd.concat([i_fltd_hat, i_ma_lags_rets], axis=1).values
+
+        i_rf_probs = rfc.predict_proba(i_rf_pred_data)
+        i_rf_probs = pd.DataFrame(i_rf_probs, i_idx, msm_columns)
+        
+        ret_frcst.append(i_ret_frcst)
+        vol_frcst.append(i_vol_frcst)
+        updt_prob_frcst.append(i_updt_hat)
+        fltd_prob_frcst.append(i_fltd_hat)
+        rforest_prob_frcst.append(i_rf_probs)
+
+    ret_frcst = pd.concat(ret_frcst)
+    vol_frcst = pd.concat(vol_frcst)
+    updt_prob_frcst = pd.concat(updt_prob_frcst)
+    fltd_prob_frcst = pd.concat(fltd_prob_frcst)
+    rforest_prob_frcst = pd.concat(rforest_prob_frcst)
+
+    return {
+        'returns': ret_frcst,
+        'vol': vol_frcst,
+        'filtered_probs': fltd_prob_frcst,
+        'updated_probs': updt_prob_frcst,
+        'rforest_probs': rforest_prob_frcst
+    }
