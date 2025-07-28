@@ -1,4 +1,4 @@
-# Replication of Models, Regimes, and Trend Following (Parts 1 & 2)
+# Replication of Models, Regimes, and Trend Following Whitepaper Series
 
 [![Open In Colab (Parts 1 & 2)](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/internQuant/models-regimes-trend/blob/main/notebooks/Parts_1%262.ipynb) **Parts 1&2**  
 
