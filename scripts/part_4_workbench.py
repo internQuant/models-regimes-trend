@@ -12,6 +12,7 @@ from utils.msm import *
 from utils.plots import *
 from utils.transforms import *
 from utils.presentation import style_panel
+from IPython.display import display
 
 warnings.filterwarnings(
     "ignore",
@@ -241,6 +242,7 @@ TSM_signals = TSM_signals.reindex(idx)
 # Target our forecasted vol to 15% annualized vol prior to returns scaling
 forecast_vol_signals = (0.15/(forecasted_data['vol']*np.sqrt(252))).rename('VM')
 forecast_returns_signals = np.sign(forecasted_data['returns']).rename('Pos. Forecast')
+forecast_returns_signals.loc[forecast_returns_signals<0] = 0
 
 # This function simply applies a threshold to the probabilities
 nb_msm_signals = probability_threshold_signals(forecasted_msm_probabilites)
