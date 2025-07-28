@@ -3,10 +3,12 @@
 [![Open In Colab (Parts 1 & 2)](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/internQuant/models-regimes-trend/blob/main/notebooks/Parts_1%262.ipynb) **Parts 1&2**  
 
 [![Open In Colab (Part 3)](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/internQuant/models-regimes-trend/blob/main/notebooks/Part_3.ipynb) **Part 3**
-git 
->This repo contains Jupyter notebooks that step through an educational replication of JungleRock’s white papers “Models, Regimes, and Trend Following – Parts 1, 2 & 3. (4 in the works)” 
 
-> Results closely match the originals, with discrepancies noted.
+[![Open In Colab (Part 3)](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/internQuant/models-regimes-trend/blob/main/notebooks/Part_4.ipynb) **Part 4**
+git 
+>This repository contains Jupyter notebooks that step through an educational replication of JungleRock’s white paper series “Models, Regimes, and Trend Following" (all parts).
+
+> Results closely match the originals, discrepancies are noted and commented.
 
 ---
 
@@ -16,7 +18,7 @@ git
 
 You can run the notebooks directly in Colab, no installation needed:
 
-1. Go to the repo [Parts 1 & 2 Colab](https://colab.research.google.com/github/internQuant/models-regimes-trend/blob/main/notebooks/Parts_1%262.ipynb) or [Part 3 Colab](https://colab.research.google.com/github/internQuant/models-regimes-trend/blob/main/notebooks/Part_3.ipynb).
+1. Go to the repo [Parts 1 & 2 Colab](https://colab.research.google.com/github/internQuant/models-regimes-trend/blob/main/notebooks/Parts_1%262.ipynb), [Part 3 Colab](https://colab.research.google.com/github/internQuant/models-regimes-trend/blob/main/notebooks/Part_3.ipynb) or [Part 4 Colab](https://colab.research.google.com/github/internQuant/models-regimes-trend/blob/main/notebooks/Part_3.ipynb).
 2. Login if needed.
 3. Run cells.
 
@@ -33,12 +35,13 @@ To run locally, make sure you have Python 3.8+ and the following libraries insta
 - `requests`
 - `statsmodels`
 - `cycler`
+- `scikit-learn`
 
-Clone the repository and then launch the desired notebook (`Parts_1&2.ipynb` or `Part_3.ipynb`) with Jupyter.
+Clone the repository and then launch the desired notebook with Jupyter.
 
 ---
 
-## 🧭 Notebook Overview
+## 🧭 Notebooks Overview
 ### Notebooks run through systematic steps:
 
 1. **Setup & Imports**  
@@ -71,7 +74,8 @@ Special thanks to the [**JungleRock**](https://junglerock.com/) team for providi
 
 - JungleRock, “Models, Regimes, and Trend Following – Part 1”  
 - JungleRock, “Models, Regimes, and Trend Following – Part 2”  
-- JungleRock, “Models, Regimes, and Trend Following – Part 3”  
+- JungleRock, “Models, Regimes, and Trend Following – Part 3” 
+- JungleRock, “Models, Regimes, and Trend Following – Part 4” 
 - Fama, E. F. & French, K. R. (1993). “Common risk factors in the returns on stocks and bonds.”
 
 ## 📖 Technical References
@@ -80,4 +84,3 @@ Special thanks to the [**JungleRock**](https://junglerock.com/) team for providi
 - Hamilton, J. D. (1994). *Time Series Analysis*, Chapter 22. Princeton: Princeton University Press.
 
 ---
-### **Part 4 is in the works and will be added soon. Stay tuned!**
