@@ -5,7 +5,7 @@
 [![Open In Colab (Part 3)](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/internQuant/models-regimes-trend/blob/main/notebooks/Part_3.ipynb) **Part 3**
 
 [![Open In Colab (Part 3)](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/internQuant/models-regimes-trend/blob/main/notebooks/Part_4.ipynb) **Part 4**
-git 
+
 >This repository contains Jupyter notebooks that step through an educational replication of JungleRock’s white paper series “Models, Regimes, and Trend Following" (all parts).
 
 > Results closely match the originals, discrepancies are noted and commented.
